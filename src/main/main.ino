@@ -4,6 +4,8 @@
 #define LC 51.0
 #define L1 65.0
 #define L2 121.0
+#define WIDTH 120
+#define NUM_POINTS 10
 
 SoftwareSerial Bluetooth(12, 9);
 int dataIn = 0;
@@ -19,9 +21,9 @@ float calibration[6][3] = {
 
 unsigned long previousTime = 0;
 unsigned long currentTime = millis();
-unsigned long interval = 60;
+unsigned long interval = 100;
 float currentAngles[3];
-float points[10][2];
+float points[NUM_POINTS][2];
 float L0, L3;
 float gamma_femur;
 float phi_tibia, phi_femur;
@@ -32,7 +34,6 @@ float z1, z2, z3, z4, z5, z6;
 float offsetX = 0.0, offsetY = 0.0, offsetZ = 0.0;
 int step = 0;
 int mode = 0;
-bool haveMotorsArrived = false;
 
 Servo coxa1, femur1, tibia1;
 Servo coxa2, femur2, tibia2;
@@ -52,6 +53,7 @@ void getCoxaForLegNumber(float x, float y, int legNumber);
 void checkForEmotes();
 void wave();
 void hype();
+void attack();
 
 void setup() {
   Serial.begin(9600);
@@ -64,16 +66,7 @@ void setup() {
 void loop() {
   readBluetooth();
   updateEndPoints();
-
-  currentTime = millis();
-  if (currentTime - previousTime > interval) {
-    updateMotors();
-    haveMotorsArrived = true;
-    previousTime = currentTime;
-  } else {
-    haveMotorsArrived = false;
-  }
-
+  updateMotors();
   checkForEmotes();
 }
 
@@ -104,19 +97,19 @@ void setupServos() {
 }
 
 void calculatePoints() {
-  for (int i = 0, x = -40; i <= 4; i++, x += 16) {
+  for (int i = 0, x = -(WIDTH / 2); i <= NUM_POINTS / 2 - 1; i++, x += WIDTH / (NUM_POINTS / 2)) {
     points[i][0] = x;
     points[i][1] = getZFromEquationGivenX(x) - 80.0;
   }
 
-  for (int i = 5, x = 40; i <= 9; i++, x -= 16) {
+  for (int i = NUM_POINTS / 2, x = WIDTH / 2; i <= NUM_POINTS - 1; i++, x -= WIDTH / (NUM_POINTS / 2)) {
     points[i][0] = x;
     points[i][1] = -80.0;
   }
 }
 
 float getZFromEquationGivenX(int x) {
-  return -0.025 * sq(x) + 40.0;
+  return -(60.0 / 3600.0) * sq(x) + 60.0;
 }
 
 void readBluetooth() {
@@ -155,17 +148,22 @@ void readBluetooth() {
         mode = 7;
         break;
 
+      case 8:
+        step = 0;
+        mode = 8;
+        break;
+
       default:
         if (dataIn >= 10 && dataIn <= 45) {
           offsetX = map(dataIn, 10, 45, -50, 50);
         }
-        
+
         if (dataIn >= 50 && dataIn <= 85) {
           offsetY = map(dataIn, 50, 85, -27, 27);
         }
-        
+
         if (dataIn >= 90 && dataIn <= 125) {
-          offsetZ = map(dataIn, 90, 125, 20, -78);
+          offsetZ = map(dataIn, 90, 125, 20, -67);
         }
         break;
     }
@@ -173,7 +171,7 @@ void readBluetooth() {
 }
 
 void updateEndPoints() {
-  if (mode == 0 || mode == 6 || mode == 7) {
+  if (mode == 0 || mode == 6 || mode == 7 || mode == 8) {
     x2 = 0.0 + offsetX;
     z1 = z2 = z3 = z4 = z5 = z6 = -80.0 + offsetZ;
   } else {
@@ -181,10 +179,12 @@ void updateEndPoints() {
     z2 = z4 = z6 = points[step][1] + offsetZ;
     z1 = z3 = z5 = (step <= 4) ? (-80.0 + offsetZ) : (points[step - 5][1] + offsetZ);
 
-    if (haveMotorsArrived) {
+    currentTime = millis();
+    if (currentTime - previousTime > interval) {
       step = (mode == 2 || mode == 3) ? (step + 1) : (step - 1);
+      previousTime = currentTime;
     }
-    
+
     if (step == 10) {
       step = 0;
     } else if (step == -1) {
@@ -207,7 +207,7 @@ void updateEndPoints() {
 
 void updateMotors() {
   calculateAngles(x1, y1, z1, 1);
-  
+
   coxa1.write(int(currentAngles[0]));
   femur1.write(int(currentAngles[1]));
   tibia1.write(int(currentAngles[2]));
@@ -262,12 +262,6 @@ void calculateAngles(float x, float y, float z, int legNumber) {
     currentAngles[0] = theta_coxa;
     currentAngles[1] = theta_femur;
     currentAngles[2] = theta_tibia;
-
-    if (isnan(theta_coxa) || isnan(theta_femur) || isnan(theta_tibia)) {
-      Serial.println("\nTrue");
-    }
-  } else {
-    Serial.println("\nTrue 2");
   }
 }
 
@@ -320,11 +314,12 @@ void getCoxaForLegNumber(float x, float y, int legNumber) {
 }
 
 void checkForEmotes() {
-  updateMotors();
   if (mode == 6) {
     wave();
   } else if (mode == 7) {
     hype();
+  } else if (mode == 8) {
+    attack();
   }
 }
 
@@ -333,14 +328,14 @@ void wave() {
   tibia1.write(90);
   delay(200);
 
-  for(int i = 0; i <= 2; i++) {
+  for (int i = 0; i <= 2; i++) {
     coxa1.write(45);
     delay(400);
     coxa1.write(135);
     delay(400);
   }
 
-  for(int i = 0; i <= 3; i++) {
+  for (int i = 0; i <= 3; i++) {
     tibia1.write(70);
     delay(300);
     tibia1.write(170);
@@ -373,7 +368,7 @@ void hype() {
   coxa4.write(90);
   femur4.write(180);
   tibia4.write(90);
-  
+
   coxa6.write(90);
   femur6.write(180);
   tibia6.write(90);
@@ -404,10 +399,30 @@ void hype() {
   coxa3.write(90);
   femur3.write(180);
   tibia3.write(90);
-  
+
   coxa5.write(90);
   femur5.write(180);
   tibia5.write(90);
 
   delay(350);
+}
+
+void attack() {
+  coxa2.write(145);
+  coxa5.write(35);
+  coxa1.write(135);
+  coxa6.write(45);
+
+  for (int i = 0; i < 3; i++) {
+    femur1.write(140);
+    tibia1.write(145);
+    tibia6.write(180);
+    femur6.write(180);
+    delay(500);
+    femur1.write(180);
+    tibia1.write(180);
+    femur6.write(140);
+    tibia6.write(145);
+    delay(500);
+  }
 }
