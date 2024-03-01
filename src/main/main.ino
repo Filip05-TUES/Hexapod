@@ -153,17 +153,25 @@ void readBluetooth() {
         mode = 8;
         break;
 
+      case 9:
+        mode = 9;
+        break;
+
+      case 10:
+        mode = 10;
+        break;
+
       default:
-        if (dataIn >= 10 && dataIn <= 45) {
-          offsetX = map(dataIn, 10, 45, -50, 50);
+        if (dataIn >= 20 && dataIn <= 55) {
+          offsetX = map(dataIn, 20, 55, -50, 50);
         }
 
-        if (dataIn >= 50 && dataIn <= 85) {
-          offsetY = map(dataIn, 50, 85, -27, 27);
+        if (dataIn >= 60 && dataIn <= 95) {
+          offsetY = map(dataIn, 60, 95, -27, 27);
         }
 
-        if (dataIn >= 90 && dataIn <= 125) {
-          offsetZ = map(dataIn, 90, 125, 20, -67);
+        if (dataIn >= 100 && dataIn <= 135) {
+          offsetZ = map(dataIn, 100, 135, 20, -67);
         }
         break;
     }
@@ -175,13 +183,18 @@ void updateEndPoints() {
     x2 = 0.0 + offsetX;
     z1 = z2 = z3 = z4 = z5 = z6 = -80.0 + offsetZ;
   } else {
-    x2 = points[step][0] + offsetX;
+    if (mode == 9 || mode == 10) {
+      y2 = points[step][0] + offsetY;
+    } else {
+      x2 = points[step][0] + offsetX;
+    }
+
     z2 = z4 = z6 = points[step][1] + offsetZ;
     z1 = z3 = z5 = (step <= 4) ? (-80.0 + offsetZ) : (points[step - 5][1] + offsetZ);
 
     currentTime = millis();
     if (currentTime - previousTime > interval) {
-      step = (mode == 2 || mode == 3) ? (step + 1) : (step - 1);
+      step = (mode == 2 || mode == 3 || mode == 10) ? (step + 1) : (step - 1);
       previousTime = currentTime;
     }
 
@@ -192,17 +205,33 @@ void updateEndPoints() {
     }
   }
 
-  x1 = -x2 + 82.0 + 2 * offsetX;
-  x3 = -x2 - 82.0 + 2 * offsetX;
-  x4 = (mode == 2 || mode == 5) ? (x2 - 82.0) : (-x2 - 82.0 + 2 * offsetX);
-  x5 = (mode == 2 || mode == 5) ? (-x2 + 2 * offsetX) : (x2);
-  x6 = (mode == 2 || mode == 5) ? (x2 + 82.0) : (-x2 + 82.0 + 2 * offsetX);
-  y1 = 82.0 + offsetY;
-  y2 = 116.0 + offsetY;
-  y3 = 82.0 + offsetY;
-  y4 = -82.0 + offsetY;
-  y5 = -116.0 + offsetY;
-  y6 = -82.0 + offsetY;
+  if (mode == 9 || mode == 10) {
+    y1 = -y2 + 82.0 + 2 * offsetY;
+    y3 = -y2 + 82.0 + 2 * offsetY;
+    y4 = y2 - 82.0;
+    y5 = -y2 - 116.0 - 10.0 + 2 * offsetY;
+    y6 = y2 - 82.0;
+    y2 += 116.0 + 10.0;
+
+    x1 = 82.0 + offsetX;
+    x2 = 0.0 + offsetX;
+    x3 = -82.0 + offsetX;
+    x4 = -82.0 + offsetX;
+    x5 = 0.0 + offsetX;
+    x6 = 82.0 + offsetX;
+  } else {
+    x1 = -x2 + 82.0 + 2 * offsetX;
+    x3 = -x2 - 82.0 + 2 * offsetX;
+    x4 = (mode == 2 || mode == 5) ? (x2 - 82.0) : (-x2 - 82.0 + 2 * offsetX);
+    x5 = (mode == 2 || mode == 5) ? (-x2 + 2 * offsetX) : (x2);
+    x6 = (mode == 2 || mode == 5) ? (x2 + 82.0) : (-x2 + 82.0 + 2 * offsetX);
+    y1 = 82.0 + offsetY;
+    y2 = 116.0 + offsetY;
+    y3 = 82.0 + offsetY;
+    y4 = -82.0 + offsetY;
+    y5 = -116.0 + offsetY;
+    y6 = -82.0 + offsetY;
+  }
 }
 
 void updateMotors() {
@@ -262,6 +291,8 @@ void calculateAngles(float x, float y, float z, int legNumber) {
     currentAngles[0] = theta_coxa;
     currentAngles[1] = theta_femur;
     currentAngles[2] = theta_tibia;
+  } else {
+    Serial.println(legNumber);
   }
 }
 
