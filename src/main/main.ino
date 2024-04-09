@@ -4,8 +4,14 @@
 #define LC 51.0
 #define L1 65.0
 #define L2 121.0
-#define WIDTH 120
+#define WIDTH 120.0
+#define HEIGHT 60.0
 #define NUM_POINTS 10
+#define INTERVAL 100
+#define NUM_LEGS 6
+#define MAX_ROLL_ANGLE 20
+#define MAX_PITCH_ANGLE 20
+#define MAX_YAW_ANGLE 45
 
 SoftwareSerial Bluetooth(12, 9);
 int dataIn = 0;
@@ -21,19 +27,18 @@ float calibration[6][3] = {
 
 unsigned long previousTime = 0;
 unsigned long currentTime = millis();
-unsigned long interval = 100;
 float currentAngles[3];
 float points[NUM_POINTS][2];
 float L0, L3;
 float gamma_femur;
 float phi_tibia, phi_femur;
 float theta_tibia, theta_femur, theta_coxa;
-float x1, x2, x3, x4, x5, x6;
-float y1, y2, y3, y4, y5, y6;
-float z1, z2, z3, z4, z5, z6;
+float xCoord[6], yCoord[6], zCoord[6];
 float offsetX = 0.0, offsetY = 0.0, offsetZ = 0.0;
+int roll = 0, pitch = 20, yaw = 0;
 int step = 0;
-int mode = 0;
+int mode = 11;
+bool isTiltEnabled = true;
 
 Servo coxa1, femur1, tibia1;
 Servo coxa2, femur2, tibia2;
@@ -47,6 +52,9 @@ void calculatePoints();
 float getZFromEquationGivenX(int x);
 void readBluetooth();
 void updateEndPoints();
+void rotateX(float angle);
+void rotateY(float angle);
+void rotateZ(float angle);
 void updateMotors();
 void calculateAngles(float x, float y, float z, int legNumber);
 void getCoxaForLegNumber(float x, float y, int legNumber);
@@ -109,7 +117,7 @@ void calculatePoints() {
 }
 
 float getZFromEquationGivenX(int x) {
-  return -(60.0 / 3600.0) * sq(x) + 60.0;
+  return -(HEIGHT / sq(WIDTH / 2)) * sq(x) + HEIGHT;
 }
 
 void readBluetooth() {
@@ -120,6 +128,7 @@ void readBluetooth() {
       case 0:
         step = 0;
         mode = 0;
+        isTiltEnabled = false;
         break;
 
       case 2:
@@ -161,111 +170,191 @@ void readBluetooth() {
         mode = 10;
         break;
 
+      case 11:
+        mode = 11;
+        isTiltEnabled = true;
+        break;
+
       default:
         if (dataIn >= 20 && dataIn <= 55) {
           offsetX = map(dataIn, 20, 55, -50, 50);
         }
 
         if (dataIn >= 60 && dataIn <= 95) {
-          offsetY = map(dataIn, 60, 95, -27, 27);
+          offsetY = map(dataIn, 60, 95, -50, 50);
         }
 
         if (dataIn >= 100 && dataIn <= 135) {
           offsetZ = map(dataIn, 100, 135, 20, -67);
         }
+
+        if (dataIn >= 200 && dataIn <= 290) {
+          roll = map(dataIn, 200, 290, -MAX_ROLL_ANGLE, MAX_ROLL_ANGLE);
+        }
+
+        if (dataIn >= 300 && dataIn <= 390) {
+          pitch = map(dataIn, 300, 390, -MAX_PITCH_ANGLE, MAX_PITCH_ANGLE);
+        }
+
+        if (dataIn >= 400 && dataIn <= 490) {
+          yaw = map(dataIn, 400, 490, -MAX_YAW_ANGLE, MAX_YAW_ANGLE);
+        }
+
         break;
     }
   }
 }
 
-void updateEndPoints() {
-  if (mode == 0 || mode == 6 || mode == 7 || mode == 8) {
-    x2 = 0.0 + offsetX;
-    z1 = z2 = z3 = z4 = z5 = z6 = -80.0 + offsetZ;
-  } else {
-    if (mode == 9 || mode == 10) {
-      y2 = points[step][0] + offsetY;
-    } else {
-      x2 = points[step][0] + offsetX;
-    }
+int wayX = -1;
+int wayY = -1;
 
-    z2 = z4 = z6 = points[step][1] + offsetZ;
-    z1 = z3 = z5 = (step <= 4) ? (-80.0 + offsetZ) : (points[step - 5][1] + offsetZ);
+void updateEndPoints() {
+  if (mode == 0 || mode == 6 || mode == 7 || mode == 8 || mode == 11) {
+    xCoord[1] = 0.0 + offsetX;
+    zCoord[0] = zCoord[1] = zCoord[2] = zCoord[3] = zCoord[4] = zCoord[5] = -80.0 + offsetZ;
 
     currentTime = millis();
-    if (currentTime - previousTime > interval) {
+    if (currentTime - previousTime > INTERVAL) {
+      if (roll == MAX_ROLL_ANGLE) {
+        wayX = -1;
+      } else if (roll == -MAX_ROLL_ANGLE) {
+        wayX = 1;
+      }
+
+      if (pitch == MAX_PITCH_ANGLE) {
+        wayY = -1;
+      } else if (pitch == -MAX_PITCH_ANGLE) {
+        wayY = 1;
+      }
+
+      roll += wayX;
+      pitch += wayY;
+
+      previousTime = currentTime;
+    }
+
+  } else {
+    if (mode == 9 || mode == 10) {
+      yCoord[1] = points[step][0] + offsetY;
+    } else {
+      xCoord[1] = points[step][0] + offsetX;
+    }
+
+    zCoord[1] = zCoord[3] = zCoord[5] = points[step][1] + offsetZ;
+    zCoord[0] = zCoord[2] = zCoord[4] = (step <= NUM_POINTS / 2 - 1) ? (-80.0 + offsetZ) : (points[step - NUM_POINTS / 2][1] + offsetZ);
+
+    currentTime = millis();
+    if (currentTime - previousTime > INTERVAL) {
       step = (mode == 2 || mode == 3 || mode == 10) ? (step + 1) : (step - 1);
       previousTime = currentTime;
     }
 
-    if (step == 10) {
+    if (step == NUM_POINTS) {
       step = 0;
     } else if (step == -1) {
-      step = 9;
+      step = NUM_POINTS - 1;
     }
   }
 
-  if (mode == 9 || mode == 10) {
-    y1 = -y2 + 82.0 + 2 * offsetY;
-    y3 = -y2 + 82.0 + 2 * offsetY;
-    y4 = y2 - 82.0;
-    y5 = -y2 - 116.0 - 10.0 + 2 * offsetY;
-    y6 = y2 - 82.0;
-    y2 += 116.0 + 10.0;
+  xCoord[0] = (mode == 9 || mode == 10) ? (82.0 + offsetX) : (-xCoord[1] + 82.0 + 2 * offsetX);
+  xCoord[1] = (mode == 9 || mode == 10) ? (0.0 + offsetX) : (xCoord[1]);
+  xCoord[2] = (mode == 9 || mode == 10) ? (-82.0 + offsetX) : (-xCoord[1] - 82.0 + 2 * offsetX);
+  xCoord[3] = (mode == 9 || mode == 10) ? (-82.0 + offsetX) : (mode == 2 || mode == 5) ? (xCoord[1] - 82.0)
+                                                                                       : (-xCoord[1] - 82.0 + 2 * offsetX);
+  xCoord[4] = (mode == 9 || mode == 10) ? (0.0 + offsetX) : (mode == 2 || mode == 5) ? (-xCoord[1] + 2 * offsetX)
+                                                                                     : (xCoord[1]);
+  xCoord[5] = (mode == 9 || mode == 10) ? (82.0 + offsetX) : (mode == 2 || mode == 5) ? (xCoord[1] + 82.0)
+                                                                                      : (-xCoord[1] + 82.0 + 2 * offsetX);
 
-    x1 = 82.0 + offsetX;
-    x2 = 0.0 + offsetX;
-    x3 = -82.0 + offsetX;
-    x4 = -82.0 + offsetX;
-    x5 = 0.0 + offsetX;
-    x6 = 82.0 + offsetX;
-  } else {
-    x1 = -x2 + 82.0 + 2 * offsetX;
-    x3 = -x2 - 82.0 + 2 * offsetX;
-    x4 = (mode == 2 || mode == 5) ? (x2 - 82.0) : (-x2 - 82.0 + 2 * offsetX);
-    x5 = (mode == 2 || mode == 5) ? (-x2 + 2 * offsetX) : (x2);
-    x6 = (mode == 2 || mode == 5) ? (x2 + 82.0) : (-x2 + 82.0 + 2 * offsetX);
-    y1 = 82.0 + offsetY;
-    y2 = 116.0 + offsetY;
-    y3 = 82.0 + offsetY;
-    y4 = -82.0 + offsetY;
-    y5 = -116.0 + offsetY;
-    y6 = -82.0 + offsetY;
+  yCoord[0] = (mode == 9 || mode == 10) ? (-yCoord[1] + 82.0 + 2 * offsetY) : (82.0 + offsetY);
+  yCoord[2] = (mode == 9 || mode == 10) ? (-yCoord[1] + 82.0 + 2 * offsetY) : (82.0 + offsetY);
+  yCoord[3] = (mode == 9 || mode == 10) ? (yCoord[1] - 82.0) : (-82.0 + offsetY);
+  yCoord[4] = (mode == 9 || mode == 10) ? (-yCoord[1] - 116.0 - 10.0 + 2 * offsetY) : (-116.0 + offsetY);
+  yCoord[5] = (mode == 9 || mode == 10) ? (yCoord[1] - 82.0) : (-82.0 + offsetY);
+  yCoord[1] = (mode == 9 || mode == 10) ? (yCoord[1] + 116.0 + 10.0) : (116.0 + offsetY);
+
+  if (isTiltEnabled) {
+    rotateX(roll);
+    rotateY(pitch);
+    rotateZ(yaw);
+  }
+}
+
+void rotateX(float angle) {
+  float cosTheta = cos(angle * DEG_TO_RAD);
+  float sinTheta = sin(angle * DEG_TO_RAD);
+  float yOffsets[] = { 58.4, 90.8, 58.4, -58.4, -90.8, -58.4 };
+
+  for (int i = 0; i <= NUM_LEGS - 1; i++) {
+    float tempY = yCoord[i] + yOffsets[i];
+    float tempZ = zCoord[i];
+
+    yCoord[i] = tempY * cosTheta - tempZ * sinTheta - yOffsets[i];
+    zCoord[i] = tempY * sinTheta + tempZ * cosTheta;
+  }
+}
+
+void rotateY(float angle) {
+  float cosTheta = cos(angle * DEG_TO_RAD);
+  float sinTheta = sin(angle * DEG_TO_RAD);
+  float xOffsets[] = { 110.4, 0, -110.4, -110.4, 0, 110.4 };
+
+  for (int i = 0; i <= NUM_LEGS - 1; i++) {
+    float tempX = xCoord[i] + xOffsets[i];
+    float tempZ = zCoord[i];
+
+    xCoord[i] = tempX * cosTheta + tempZ * sinTheta - xOffsets[i];
+    zCoord[i] = -tempX * sinTheta + tempZ * cosTheta;
+  }
+}
+
+void rotateZ(float angle) {
+  float cosTheta = cos(angle * DEG_TO_RAD);
+  float sinTheta = sin(angle * DEG_TO_RAD);
+  float xOffsets[] = { 110.4, 0, -110.4, -110.4, 0, 110.4 };
+  float yOffsets[] = { 58.4, 90.8, 58.4, -58.4, -90.8, -58.4 };
+
+  for (int i = 0; i <= NUM_LEGS - 1; i++) {
+    float tempX = xCoord[i] + xOffsets[i];
+    float tempY = yCoord[i] + yOffsets[i];
+
+    xCoord[i] = tempX * cosTheta - tempY * sinTheta - xOffsets[i];
+    yCoord[i] = tempX * sinTheta + tempY * cosTheta - yOffsets[i];
   }
 }
 
 void updateMotors() {
-  calculateAngles(x1, y1, z1, 1);
+  calculateAngles(xCoord[0], yCoord[0], zCoord[0], 1);
 
   coxa1.write(int(currentAngles[0]));
   femur1.write(int(currentAngles[1]));
   tibia1.write(int(currentAngles[2]));
 
-  calculateAngles(x5, y5, z5, 5);
+  calculateAngles(xCoord[4], yCoord[4], zCoord[4], 5);
 
   coxa5.write(int(currentAngles[0]));
   femur5.write(int(currentAngles[1]));
   tibia5.write(int(currentAngles[2]));
 
-  calculateAngles(x3, y3, z3, 3);
+  calculateAngles(xCoord[2], yCoord[2], zCoord[2], 3);
 
   coxa3.write(int(currentAngles[0]));
   femur3.write(int(currentAngles[1]));
   tibia3.write(int(currentAngles[2]));
 
-  calculateAngles(x6, y6, z6, 6);
+  calculateAngles(xCoord[5], yCoord[5], zCoord[5], 6);
 
   coxa6.write(int(currentAngles[0]));
   femur6.write(int(currentAngles[1]));
   tibia6.write(int(currentAngles[2]));
 
-  calculateAngles(x2, y2, z2, 2);
+  calculateAngles(xCoord[1], yCoord[1], zCoord[1], 2);
 
   coxa2.write(int(currentAngles[0]));
   femur2.write(int(currentAngles[1]));
   tibia2.write(int(currentAngles[2]));
 
-  calculateAngles(x4, y4, z4, 4);
+  calculateAngles(xCoord[3], yCoord[3], zCoord[3], 4);
 
   coxa4.write(int(currentAngles[0]));
   femur4.write(int(currentAngles[1]));
@@ -375,17 +464,17 @@ void wave() {
 }
 
 void hype() {
-  calculateAngles(x1, y1, z1, 1);
+  calculateAngles(xCoord[0], yCoord[0], zCoord[0], 1);
   coxa1.write(int(currentAngles[0]));
   femur1.write(int(currentAngles[1]));
   tibia1.write(int(currentAngles[2]));
 
-  calculateAngles(x3, y3, z3, 3);
+  calculateAngles(xCoord[2], yCoord[2], zCoord[2], 3);
   coxa3.write(int(currentAngles[0]));
   femur3.write(int(currentAngles[1]));
   tibia3.write(int(currentAngles[2]));
 
-  calculateAngles(x5, y5, z5, 5);
+  calculateAngles(xCoord[4], yCoord[4], zCoord[4], 5);
   coxa5.write(int(currentAngles[0]));
   femur5.write(int(currentAngles[1]));
   tibia5.write(int(currentAngles[2]));
@@ -406,17 +495,17 @@ void hype() {
 
   delay(350);
 
-  calculateAngles(x2, y2, z2, 2);
+  calculateAngles(xCoord[1], yCoord[1], zCoord[1], 2);
   coxa2.write(int(currentAngles[0]));
   femur2.write(int(currentAngles[1]));
   tibia2.write(int(currentAngles[2]));
 
-  calculateAngles(x4, y4, z4, 4);
+  calculateAngles(xCoord[3], yCoord[3], zCoord[3], 4);
   coxa4.write(int(currentAngles[0]));
   femur4.write(int(currentAngles[1]));
   tibia4.write(int(currentAngles[2]));
 
-  calculateAngles(x6, y6, z6, 6);
+  calculateAngles(xCoord[5], yCoord[5], zCoord[5], 6);
   coxa6.write(int(currentAngles[0]));
   femur6.write(int(currentAngles[1]));
   tibia6.write(int(currentAngles[2]));
@@ -444,7 +533,7 @@ void attack() {
   coxa1.write(135);
   coxa6.write(45);
 
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i <= 2; i++) {
     femur1.write(140);
     tibia1.write(145);
     tibia6.write(180);
