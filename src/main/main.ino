@@ -1,6 +1,10 @@
 #include <math.h>
 #include <Servo.h>
 #include <SoftwareSerial.h>
+#include <MPU6050.h>
+#include <Wire.h>
+#include <PID_v1_bc.h>
+
 #define LC 51.0
 #define L1 65.0
 #define L2 121.0
@@ -11,11 +15,30 @@
 #define NUM_LEGS 6
 #define MAX_ROLL_ANGLE 20
 #define MAX_PITCH_ANGLE 20
-#define MAX_YAW_ANGLE 45
+#define MAX_YAW_ANGLE 35
 
-SoftwareSerial Bluetooth(12, 9);
-int dataIn = 0;
+double Setpoint = 0.0;
+double PIDRollInput, PIDRollOutput;
+double PIDPitchInput, PIDPitchOutput;
+double kp = 1.5;
+double ki = 3.0;
+double kd = 0.001;
+PID bodyRollPID(&PIDRollInput, &PIDRollOutput, &Setpoint, kp, ki, kd, DIRECT);
+PID bodyPitchPID(&PIDPitchInput, &PIDPitchOutput, &Setpoint, kp, ki, kd, DIRECT);
 
+float currentAngles[3];
+float points[NUM_POINTS][2];
+float L0, L3;
+float gamma_femur;
+float phi_tibia, phi_femur;
+float theta_tibia, theta_femur, theta_coxa;
+float xCoord[6], yCoord[6], zCoord[6];
+float offsetX = 0.0, offsetY = 0.0, offsetZ = 0.0;
+float pitchDeg, rollDeg;
+float xOffsets[] = { 110.4, 0, -110.4, -110.4, 0, 110.4 };
+float yOffsets[] = { 58.4, 90.8, 58.4, -58.4, -90.8, -58.4 };
+float cosTheta, sinTheta;
+float tempX, tempY, tempZ;
 float calibration[6][3] = {
   { -4.0, -7.0, 4.0 },
   { 3.0, 2.0, -4.0 },
@@ -27,18 +50,19 @@ float calibration[6][3] = {
 
 unsigned long previousTime = 0;
 unsigned long currentTime = millis();
-float currentAngles[3];
-float points[NUM_POINTS][2];
-float L0, L3;
-float gamma_femur;
-float phi_tibia, phi_femur;
-float theta_tibia, theta_femur, theta_coxa;
-float xCoord[6], yCoord[6], zCoord[6];
-float offsetX = 0.0, offsetY = 0.0, offsetZ = 0.0;
-int roll = 0, pitch = 20, yaw = 0;
+
+int dataIn = 0;
+int roll = 0, pitch = 0, yaw = 0;
 int step = 0;
-int mode = 11;
-bool isTiltEnabled = true;
+int mode = 0;
+int balanceRoll = 0, balancePitch = 0;
+int prevRollDeg, prevPitchDeg;
+
+int16_t ax, ay, az;
+
+bool isTiltEnabled = false;
+bool isSelfBalanceEnabled = false;
+bool isSelfBalanceCustomEnabled = false;
 
 Servo coxa1, femur1, tibia1;
 Servo coxa2, femur2, tibia2;
@@ -47,11 +71,22 @@ Servo coxa4, femur4, tibia4;
 Servo coxa5, femur5, tibia5;
 Servo coxa6, femur6, tibia6;
 
+SoftwareSerial Bluetooth(12, 9);
+
+MPU6050 mpu;
+
+void initCommunication();
+void initPID();
 void setupServos();
 void calculatePoints();
 float getZFromEquationGivenX(int x);
 void readBluetooth();
 void updateEndPoints();
+void calculateBalanceAngles();
+void getImuMesures();
+void filterPitchAndRoll();
+void calculateRollPitchPID();
+void calculateRollPitchCustom();
 void rotateX(float angle);
 void rotateY(float angle);
 void rotateZ(float angle);
@@ -64,9 +99,8 @@ void hype();
 void attack();
 
 void setup() {
-  Serial.begin(9600);
-  Bluetooth.begin(9600);
-  Bluetooth.setTimeout(1);
+  initCommunication();
+  initPID();
   setupServos();
   calculatePoints();
 }
@@ -76,6 +110,21 @@ void loop() {
   updateEndPoints();
   updateMotors();
   checkForEmotes();
+}
+
+void initCommunication() {
+  Serial.begin(9600);
+  Bluetooth.begin(9600);
+  Bluetooth.setTimeout(1);
+  Wire.begin();
+  mpu.initialize();
+}
+
+void initPID() {
+  bodyRollPID.SetMode(AUTOMATIC);
+  bodyRollPID.SetOutputLimits(-MAX_ROLL_ANGLE, MAX_ROLL_ANGLE);
+  bodyPitchPID.SetMode(AUTOMATIC);
+  bodyPitchPID.SetOutputLimits(-MAX_PITCH_ANGLE, MAX_PITCH_ANGLE);
 }
 
 void setupServos() {
@@ -129,6 +178,10 @@ void readBluetooth() {
         step = 0;
         mode = 0;
         isTiltEnabled = false;
+        isSelfBalanceEnabled = false;
+        pitch = 0;
+        roll = 0;
+        yaw = 0;
         break;
 
       case 2:
@@ -175,64 +228,48 @@ void readBluetooth() {
         isTiltEnabled = true;
         break;
 
+      case 12:
+        mode = 12;
+        isSelfBalanceEnabled = true;
+        break;
+      case 13:
+        mode = 13;
+        isSelfBalanceCustomEnabled = true;
+        break;
+
       default:
         if (dataIn >= 20 && dataIn <= 55) {
-          offsetX = map(dataIn, 20, 55, -50, 50);
+          if (isTiltEnabled) {
+            roll = map(dataIn, 20, 55, -MAX_ROLL_ANGLE, MAX_ROLL_ANGLE);
+          } else {
+            offsetX = map(dataIn, 20, 55, -50, 50);
+          }
         }
 
         if (dataIn >= 60 && dataIn <= 95) {
-          offsetY = map(dataIn, 60, 95, -50, 50);
+          if (isTiltEnabled) {
+            pitch = map(dataIn, 60, 95, MAX_PITCH_ANGLE, -MAX_PITCH_ANGLE);
+          } else {
+            offsetY = map(dataIn, 60, 95, -50, 50);
+          }
         }
 
         if (dataIn >= 100 && dataIn <= 135) {
-          offsetZ = map(dataIn, 100, 135, 20, -67);
+          if (isTiltEnabled) {
+            yaw = map(dataIn, 100, 135, -MAX_YAW_ANGLE, MAX_YAW_ANGLE);
+          } else {
+            offsetZ = map(dataIn, 100, 135, 20, -67);
+          }
         }
-
-        if (dataIn >= 200 && dataIn <= 290) {
-          roll = map(dataIn, 200, 290, -MAX_ROLL_ANGLE, MAX_ROLL_ANGLE);
-        }
-
-        if (dataIn >= 300 && dataIn <= 390) {
-          pitch = map(dataIn, 300, 390, -MAX_PITCH_ANGLE, MAX_PITCH_ANGLE);
-        }
-
-        if (dataIn >= 400 && dataIn <= 490) {
-          yaw = map(dataIn, 400, 490, -MAX_YAW_ANGLE, MAX_YAW_ANGLE);
-        }
-
         break;
     }
   }
 }
 
-int wayX = -1;
-int wayY = -1;
-
 void updateEndPoints() {
-  if (mode == 0 || mode == 6 || mode == 7 || mode == 8 || mode == 11) {
+  if (mode == 0 || mode == 6 || mode == 7 || mode == 8 || mode == 11 || mode == 12 || mode == 13) {
     xCoord[1] = 0.0 + offsetX;
     zCoord[0] = zCoord[1] = zCoord[2] = zCoord[3] = zCoord[4] = zCoord[5] = -80.0 + offsetZ;
-
-    currentTime = millis();
-    if (currentTime - previousTime > INTERVAL) {
-      if (roll == MAX_ROLL_ANGLE) {
-        wayX = -1;
-      } else if (roll == -MAX_ROLL_ANGLE) {
-        wayX = 1;
-      }
-
-      if (pitch == MAX_PITCH_ANGLE) {
-        wayY = -1;
-      } else if (pitch == -MAX_PITCH_ANGLE) {
-        wayY = 1;
-      }
-
-      roll += wayX;
-      pitch += wayY;
-
-      previousTime = currentTime;
-    }
-
   } else {
     if (mode == 9 || mode == 10) {
       yCoord[1] = points[step][0] + offsetY;
@@ -273,21 +310,75 @@ void updateEndPoints() {
   yCoord[5] = (mode == 9 || mode == 10) ? (yCoord[1] - 82.0) : (-82.0 + offsetY);
   yCoord[1] = (mode == 9 || mode == 10) ? (yCoord[1] + 116.0 + 10.0) : (116.0 + offsetY);
 
-  if (isTiltEnabled) {
+  if (isSelfBalanceEnabled || isSelfBalanceCustomEnabled) {
+    calculateBalanceAngles();
+  }
+
+  if (isTiltEnabled || isSelfBalanceEnabled || isSelfBalanceCustomEnabled) {
     rotateX(roll);
     rotateY(pitch);
     rotateZ(yaw);
   }
 }
 
+void calculateBalanceAngles() {
+  getImuMesures();
+  filterPitchAndRoll();
+
+  if (isSelfBalanceEnabled == true) {
+    calculateRollPitchPID();
+  } else if (isSelfBalanceCustomEnabled) {
+    calculateRollPitchCustom();
+  }
+}
+
+void getImuMesures() {
+  mpu.getAcceleration(&ax, &ay, &az);
+
+  rollDeg = atan2(ay, az) * RAD_TO_DEG;
+  pitchDeg = atan2(ax, az) * RAD_TO_DEG;
+}
+
+void filterPitchAndRoll() {
+  rollDeg = 0.2 * rollDeg + 0.8 * prevRollDeg;
+  pitchDeg = 0.2 * pitchDeg + 0.8 * prevPitchDeg;
+
+  prevRollDeg = rollDeg;
+  prevPitchDeg = pitchDeg;
+}
+
+void calculateRollPitchPID() {
+  PIDRollInput = rollDeg;
+  PIDPitchInput = pitchDeg;
+  bodyRollPID.Compute();
+  bodyPitchPID.Compute();
+
+  roll = PIDRollOutput;
+  pitch = PIDPitchOutput;
+
+  delay(50);
+}
+
+void calculateRollPitchCustom() {
+  balanceRoll += -rollDeg;
+  balancePitch += -pitchDeg;
+
+  balanceRoll = constrain(balanceRoll, -MAX_ROLL_ANGLE, MAX_ROLL_ANGLE);
+  balancePitch = constrain(balancePitch, -MAX_PITCH_ANGLE, MAX_PITCH_ANGLE);
+
+  roll = balanceRoll;
+  pitch = balancePitch;
+
+  delay(100);
+}
+
 void rotateX(float angle) {
-  float cosTheta = cos(angle * DEG_TO_RAD);
-  float sinTheta = sin(angle * DEG_TO_RAD);
-  float yOffsets[] = { 58.4, 90.8, 58.4, -58.4, -90.8, -58.4 };
+  cosTheta = cos(angle * DEG_TO_RAD);
+  sinTheta = sin(angle * DEG_TO_RAD);
 
   for (int i = 0; i <= NUM_LEGS - 1; i++) {
-    float tempY = yCoord[i] + yOffsets[i];
-    float tempZ = zCoord[i];
+    tempY = yCoord[i] + yOffsets[i];
+    tempZ = zCoord[i];
 
     yCoord[i] = tempY * cosTheta - tempZ * sinTheta - yOffsets[i];
     zCoord[i] = tempY * sinTheta + tempZ * cosTheta;
@@ -295,13 +386,12 @@ void rotateX(float angle) {
 }
 
 void rotateY(float angle) {
-  float cosTheta = cos(angle * DEG_TO_RAD);
-  float sinTheta = sin(angle * DEG_TO_RAD);
-  float xOffsets[] = { 110.4, 0, -110.4, -110.4, 0, 110.4 };
+  cosTheta = cos(angle * DEG_TO_RAD);
+  sinTheta = sin(angle * DEG_TO_RAD);
 
   for (int i = 0; i <= NUM_LEGS - 1; i++) {
-    float tempX = xCoord[i] + xOffsets[i];
-    float tempZ = zCoord[i];
+    tempX = xCoord[i] + xOffsets[i];
+    tempZ = zCoord[i];
 
     xCoord[i] = tempX * cosTheta + tempZ * sinTheta - xOffsets[i];
     zCoord[i] = -tempX * sinTheta + tempZ * cosTheta;
@@ -309,14 +399,12 @@ void rotateY(float angle) {
 }
 
 void rotateZ(float angle) {
-  float cosTheta = cos(angle * DEG_TO_RAD);
-  float sinTheta = sin(angle * DEG_TO_RAD);
-  float xOffsets[] = { 110.4, 0, -110.4, -110.4, 0, 110.4 };
-  float yOffsets[] = { 58.4, 90.8, 58.4, -58.4, -90.8, -58.4 };
+  cosTheta = cos(angle * DEG_TO_RAD);
+  sinTheta = sin(angle * DEG_TO_RAD);
 
   for (int i = 0; i <= NUM_LEGS - 1; i++) {
-    float tempX = xCoord[i] + xOffsets[i];
-    float tempY = yCoord[i] + yOffsets[i];
+    tempX = xCoord[i] + xOffsets[i];
+    tempY = yCoord[i] + yOffsets[i];
 
     xCoord[i] = tempX * cosTheta - tempY * sinTheta - xOffsets[i];
     yCoord[i] = tempX * sinTheta + tempY * cosTheta - yOffsets[i];
@@ -380,8 +468,6 @@ void calculateAngles(float x, float y, float z, int legNumber) {
     currentAngles[0] = theta_coxa;
     currentAngles[1] = theta_femur;
     currentAngles[2] = theta_tibia;
-  } else {
-    Serial.println(legNumber);
   }
 }
 
